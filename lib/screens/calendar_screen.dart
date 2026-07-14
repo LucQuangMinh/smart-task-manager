@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -23,12 +24,70 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   List<Task> _tasks = [];
   bool _isLoading = true;
+  late StreamSubscription<String?> _notificationSubscription;
 
   @override
   void initState() {
     super.initState();
     _selectedDay = _focusedDay;
-    _loadTasks();
+    _loadTasks().then((_) {
+      _checkPendingNotification();
+    });
+
+    // Listen for incoming notifications when app is active (singleTop resume)
+    _notificationSubscription = NotificationService().selectNotificationStream.stream.listen((String? payload) {
+      if (payload != null) {
+        _handleAlarmTriggered(payload);
+      }
+    });
+  }
+
+  // Check if the app was cold-booted via a notification tap or auto-launch
+  Future<void> _checkPendingNotification() async {
+    final details = await NotificationService().flutterLocalNotificationsPlugin.getNotificationAppLaunchDetails();
+    if (details?.didNotificationLaunchApp ?? false) {
+      final payload = details?.notificationResponse?.payload;
+      if (payload != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _handleAlarmTriggered(payload);
+        });
+      }
+    }
+  }
+
+  // The actual dialog that forces the user to dismiss
+  void _handleAlarmTriggered(String taskId) {
+    final task = _tasks.firstWhere((t) => t.id == taskId, orElse: () => Task(id: '', title: 'Unknown', dateTime: DateTime.now()));
+    if (task.id.isEmpty) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        icon: Icon(Icons.alarm_on_rounded, size: 48, color: Theme.of(context).colorScheme.primary),
+        title: const Text('⏰ BÁO THỨC!', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold)),
+        content: Text('Đã đến giờ thực hiện nhiệm vụ:\n\n"${task.title}"', textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+              onPressed: () {
+                NotificationService().cancelTaskNotification(taskId);
+                Navigator.of(context).pop();
+              },
+              child: const Text('XÁC NHẬN ĐÃ BIẾT', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1)),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   // Load tasks from SharedPreferences
@@ -122,10 +181,39 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: AppBar(
-        title: const Text('Calendar'),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        centerTitle: true,
+        elevation: 0,
+        backgroundColor: Colors.transparent,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Xin chào!',
+              style: TextStyle(
+                fontSize: 14,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            Text(
+              'Hôm nay có gì mới?',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 16.0),
+            child: CircleAvatar(
+              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+              child: Icon(Icons.person, color: Theme.of(context).colorScheme.primary),
+            ),
+          )
+        ],
       ),
       body: Column(
         children: [
@@ -159,49 +247,100 @@ class _CalendarScreenState extends State<CalendarScreen> {
             calendarStyle: CalendarStyle(
               todayDecoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.secondaryContainer,
-                shape: BoxShape.circle,
+                shape: BoxShape.rectangle,
               ),
               todayTextStyle: TextStyle(
                 color: Theme.of(context).colorScheme.onSecondaryContainer,
+                fontWeight: FontWeight.bold,
               ),
               selectedDecoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.primary,
-                shape: BoxShape.circle,
+                shape: BoxShape.rectangle,
               ),
-              markerDecoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primary,
-                shape: BoxShape.circle,
-              ),
+            ),
+            calendarBuilders: CalendarBuilders(
+              markerBuilder: (context, date, events) {
+                if (events.isEmpty) return const SizedBox();
+
+                final completedCount = events.where((task) => task.isCompleted).length;
+                final totalCount = events.length;
+                final isSelected = isSameDay(date, _selectedDay);
+
+                return Positioned(
+                  bottom: 8, // Moved inside the cell margin (default is 6.0)
+                  left: 10,
+                  right: 10,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '$completedCount',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: isSelected ? Colors.white70 : Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                      Text(
+                        '$totalCount',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: isSelected ? Colors.white : Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
             ),
             headerStyle: const HeaderStyle(
               formatButtonVisible: false,
               titleCentered: true,
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 12),
           Expanded(
             child: Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(16.0),
+              padding: const EdgeInsets.only(top: 24.0, left: 20.0, right: 20.0),
               decoration: BoxDecoration(
-                color: Theme.of(
-                  context,
-                ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(24),
-                ),
+                color: Theme.of(context).colorScheme.surfaceContainerLow,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, -5),
+                  )
+                ],
               ),
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
                   : Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'Tasks for ${DateFormat('dd/MM/yyyy').format(_selectedDay ?? _focusedDay)}',
-                          style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(fontWeight: FontWeight.bold),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Công việc ngày ${DateFormat('dd/MM').format(_selectedDay ?? _focusedDay)}',
+                              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Theme.of(context).colorScheme.primary,
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Text(
+                                '${_getTasksForDay(_selectedDay ?? _focusedDay).length} Tasks',
+                                style: TextStyle(color: Theme.of(context).colorScheme.onPrimary, fontWeight: FontWeight.bold, fontSize: 12),
+                              ),
+                            )
+                          ],
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 20),
                         Expanded(
                           child: Builder(
                             builder: (context) {
@@ -237,11 +376,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: FloatingActionButton.extended(
         onPressed: _isLoading ? null : _showAddTaskDialog,
-        tooltip: 'Add Task',
-        child: const Icon(Icons.add),
+        icon: const Icon(Icons.add),
+        label: const Text('Thêm Task', style: TextStyle(fontWeight: FontWeight.bold)),
+        elevation: 4,
       ),
     );
+  }
+  @override
+  void dispose() {
+    _notificationSubscription.cancel();
+    super.dispose();
   }
 }
