@@ -5,8 +5,14 @@ import '../models/task.dart';
 class TaskListItem extends StatelessWidget {
   final Task task;
   final ValueChanged<bool?> onChanged;
+  final VoidCallback onEdit;
 
-  const TaskListItem({super.key, required this.task, required this.onChanged});
+  const TaskListItem({
+    super.key,
+    required this.task,
+    required this.onChanged,
+    required this.onEdit,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -89,6 +95,12 @@ class TaskListItem extends StatelessWidget {
                               fontWeight: isPast ? FontWeight.bold : FontWeight.normal,
                             ),
                           ),
+                          const SizedBox(width: 8),
+                          Icon(
+                            task.isSilent ? Icons.notifications_off_outlined : Icons.notifications_active_outlined,
+                            size: 14,
+                            color: isPast ? Theme.of(context).colorScheme.error : Colors.grey.shade500,
+                          ),
                         ],
                       ),
                     ],
@@ -114,6 +126,12 @@ class TaskListItem extends StatelessWidget {
                       ),
                     ),
                   ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.edit_note, size: 24),
+                  color: Colors.grey.shade600,
+                  onPressed: onEdit,
+                ),
               ],
             ),
           ),

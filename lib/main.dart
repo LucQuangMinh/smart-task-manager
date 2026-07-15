@@ -8,7 +8,6 @@ void main() async {
   final notificationService = NotificationService();
   await notificationService.init();
   await notificationService.requestPermissions();
-  await notificationService.scheduleDailyBriefing();
 
   runApp(const MyApp());
 }

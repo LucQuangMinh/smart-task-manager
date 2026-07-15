@@ -5,10 +5,14 @@ import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:flutter/cupertino.dart';
 import '../models/task.dart';
-import '../services/notification_service.dart';
-import '../widgets/add_task_dialog.dart';
+import '../models/routine.dart';
 import '../widgets/task_list_item.dart';
+import '../widgets/add_task_dialog.dart';
+import '../services/notification_service.dart';
+import '../services/routine_service.dart';
+import 'routine_list_screen.dart';
 
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
@@ -158,24 +162,220 @@ class _CalendarScreenState extends State<CalendarScreen> {
         await NotificationService().scheduleTaskNotification(task);
       }
     }
+
+    // Schedule morning briefings for all upcoming tasks
+    await NotificationService().scheduleMorningBriefings(
+      _tasks.where((t) => !t.isCompleted).toList(),
+    );
   }
 
   // Filter tasks for a specific day
   List<Task> _getTasksForDay(DateTime day) {
-    return _tasks.where((task) => isSameDay(task.dateTime, day)).toList();
+    final tasksForDay = _tasks.where((task) => isSameDay(task.dateTime, day)).toList();
+    tasksForDay.sort((a, b) => a.dateTime.compareTo(b.dateTime));
+    return tasksForDay;
   }
 
-  void _showAddTaskDialog() async {
+  bool _isPastDay(DateTime day) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final selectedDate = DateTime(day.year, day.month, day.day);
+    return selectedDate.isBefore(today);
+  }
+
+  void _showTaskDialog({Task? existingTask}) async {
     final newTask = await showDialog<Task>(
       context: context,
-      builder: (context) =>
-          AddTaskDialog(selectedDate: _selectedDay ?? _focusedDay),
+      builder: (context) => TaskDialog(
+        selectedDate: _selectedDay ?? _focusedDay,
+        existingTask: existingTask,
+        existingTasks: _tasks,
+      ),
     );
 
     if (newTask != null) {
-      _tasks.add(newTask);
-      _saveTasks(); // Auto-save after adding
+      if (existingTask != null) {
+        final index = _tasks.indexWhere((t) => t.id == existingTask.id);
+        if (index != -1) {
+          _tasks[index] = newTask;
+        }
+      } else {
+        _tasks.add(newTask);
+      }
+      _saveTasks();
     }
+  }
+
+  void _deleteTask(Task task) async {
+    await NotificationService().cancelTaskNotification(task.id);
+    setState(() {
+      _tasks.removeWhere((t) => t.id == task.id);
+    });
+    _saveTasks();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Đã xoá công việc'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+
+  void _importRoutine(Routine routine) {
+    final selectedDate = _selectedDay ?? _focusedDay;
+    int addedCount = 0;
+    int skippedCount = 0;
+
+    // To prevent checking collision just against old tasks, 
+    // we also need to consider tasks being added in this batch.
+    // Instead of doing complex batch state, we'll just manipulate _tasks directly
+    // and then save once.
+
+    for (var template in routine.tasks) {
+      final taskDateTime = DateTime(
+        selectedDate.year,
+        selectedDate.month,
+        selectedDate.day,
+        template.hour,
+        template.minute,
+      );
+
+      // Check collision
+      bool isCollision = false;
+      for (var existingTask in _tasks) {
+        if (existingTask.dateTime.year == selectedDate.year &&
+            existingTask.dateTime.month == selectedDate.month &&
+            existingTask.dateTime.day == selectedDate.day &&
+            existingTask.dateTime.hour == template.hour &&
+            existingTask.dateTime.minute == template.minute) {
+          isCollision = true;
+          break;
+        }
+      }
+
+      if (isCollision) {
+        skippedCount++;
+        continue;
+      }
+
+      final newTask = Task(
+        id: '${DateTime.now().millisecondsSinceEpoch}_${template.id}', // Complete new unique ID
+        title: template.title,
+        dateTime: taskDateTime,
+        isCompleted: false,
+        isSilent: template.isSilent,
+      );
+
+      setState(() {
+        _tasks.add(newTask);
+      });
+      addedCount++;
+    }
+
+    if (addedCount > 0 || skippedCount > 0) {
+      _saveTasks(); // BATCH SAVE ONCE
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Đã thêm $addedCount công việc. Bỏ qua $skippedCount công việc trùng giờ.'),
+            backgroundColor: skippedCount > 0 ? Colors.orange : Colors.green,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showAddOptions() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: Text(
+                'Thêm công việc',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_note, size: 28),
+              title: const Text('Thêm thủ công'),
+              subtitle: const Text('Tự nhập chi tiết công việc'),
+              onTap: () {
+                Navigator.pop(context);
+                _showTaskDialog();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.library_books, size: 28),
+              title: const Text('Chọn từ Lịch trình mẫu'),
+              subtitle: const Text('Chèn nhanh nhiều công việc đã lưu'),
+              onTap: () async {
+                Navigator.pop(context);
+                final routines = await RoutineService().getRoutines();
+                if (routines.isEmpty) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Bạn chưa có Lịch trình mẫu nào!')),
+                    );
+                  }
+                  return;
+                }
+                if (mounted) {
+                  showModalBottomSheet(
+                    context: context,
+                    shape: const RoundedRectangleBorder(
+                      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                    ),
+                    builder: (context) => SafeArea(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Padding(
+                            padding: EdgeInsets.all(16.0),
+                            child: Text(
+                              'Chọn Lịch trình mẫu',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          Expanded(
+                            child: ListView.builder(
+                              itemCount: routines.length,
+                              itemBuilder: (context, index) {
+                                final routine = routines[index];
+                                return ListTile(
+                                  title: Text(routine.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                  subtitle: Text('${routine.tasks.length} công việc'),
+                                  onTap: () {
+                                    Navigator.pop(context);
+                                    _importRoutine(routine);
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+              },
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -206,6 +406,75 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            color: Theme.of(context).colorScheme.onSurface,
+            onPressed: () async {
+              final current = await NotificationService().getBriefingTime();
+              if (mounted) {
+                TimeOfDay tempTime = current;
+                await showCupertinoModalPopup(
+                  context: context,
+                  builder: (_) => Container(
+                    height: 300,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surface,
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            CupertinoButton(
+                              child: Text('Hủy', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                              onPressed: () => Navigator.of(context).pop(),
+                            ),
+                            CupertinoButton(
+                              child: Text('Lưu', style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.primary)),
+                              onPressed: () async {
+                                await NotificationService().saveBriefingTime(tempTime);
+                                Navigator.of(context).pop();
+                              },
+                            ),
+                          ],
+                        ),
+                        Expanded(
+                          child: CupertinoDatePicker(
+                            mode: CupertinoDatePickerMode.time,
+                            use24hFormat: true,
+                            initialDateTime: DateTime(2024, 1, 1, tempTime.hour, tempTime.minute),
+                            onDateTimeChanged: (DateTime val) {
+                              tempTime = TimeOfDay(hour: val.hour, minute: val.minute);
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+                
+                // Triggers saving tasks which internally re-schedules the morning briefings
+                _saveTasks(); 
+                
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Đã cập nhật giờ thông báo!')),
+                  );
+                }
+              }
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.library_books),
+            color: Theme.of(context).colorScheme.onSurface,
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const RoutineListScreen()),
+              );
+            },
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 16.0),
             child: CircleAvatar(
@@ -358,12 +627,28 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                 itemCount: tasksForSelectedDay.length,
                                 itemBuilder: (context, index) {
                                   final task = tasksForSelectedDay[index];
-                                  return TaskListItem(
-                                    task: task,
-                                    onChanged: (value) {
-                                      task.isCompleted = value ?? false;
-                                      _saveTasks(); // Auto-save after toggling checkbox
-                                    },
+                                  return Dismissible(
+                                    key: ValueKey(task.id),
+                                    direction: DismissDirection.endToStart,
+                                    background: Container(
+                                      alignment: Alignment.centerRight,
+                                      padding: const EdgeInsets.only(right: 20),
+                                      margin: const EdgeInsets.only(bottom: 12),
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(context).colorScheme.error,
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                      child: const Icon(Icons.delete_outline, color: Colors.white, size: 28),
+                                    ),
+                                    onDismissed: (_) => _deleteTask(task),
+                                    child: TaskListItem(
+                                      task: task,
+                                      onChanged: (value) {
+                                        task.isCompleted = value ?? false;
+                                        _saveTasks();
+                                      },
+                                      onEdit: () => _showTaskDialog(existingTask: task),
+                                    ),
                                   );
                                 },
                               );
@@ -376,12 +661,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _isLoading ? null : _showAddTaskDialog,
-        icon: const Icon(Icons.add),
-        label: const Text('Thêm Task', style: TextStyle(fontWeight: FontWeight.bold)),
-        elevation: 4,
-      ),
+      floatingActionButton: _isPastDay(_selectedDay ?? _focusedDay)
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _isLoading ? null : () => _showAddOptions(),
+              icon: const Icon(Icons.add),
+              label: const Text('Thêm Task', style: TextStyle(fontWeight: FontWeight.bold)),
+              elevation: 4,
+            ),
     );
   }
   @override

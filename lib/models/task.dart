@@ -3,12 +3,14 @@ class Task {
   final String title;
   final DateTime dateTime;
   bool isCompleted;
+  final bool isSilent;
 
   Task({
     required this.id,
     required this.title,
     required this.dateTime,
     this.isCompleted = false,
+    this.isSilent = false,
   });
 
   Map<String, dynamic> toJson() {
@@ -17,6 +19,7 @@ class Task {
       'title': title,
       'dateTime': dateTime.toIso8601String(),
       'isCompleted': isCompleted,
+      'isSilent': isSilent,
     };
   }
 
@@ -26,6 +29,7 @@ class Task {
       title: json['title'],
       dateTime: DateTime.parse(json['dateTime']),
       isCompleted: json['isCompleted'] ?? false,
+      isSilent: json['isSilent'] ?? false,
     );
   }
 }
